@@ -1,0 +1,9 @@
+{
+  "name": "保養/維修紀錄系統",
+  "short_name": "保養紀錄",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1f6feb",
+  "icons": []
+}

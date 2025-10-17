@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>保養/維修紀錄系統</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin:16px; }
+  h2 { margin-top:24px; }
+  fieldset { border:1px solid #ddd; padding:12px; border-radius:8px; margin:12px 0; }
+  label { display:block; margin-top:8px; }
+  input, textarea, select, button { padding:8px; border:1px solid #ccc; border-radius:6px; width:100%; box-sizing:border-box; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  table { width:100%; border-collapse: collapse; margin-top:8px; }
+  th, td { border:1px solid #e5e5e5; padding:6px; text-align:left; }
+  .btn { background:#1f6feb; color:#fff; border:none; cursor:pointer; }
+  .btn.secondary{ background:#666; }
+  .btn:disabled{ opacity:.6; cursor:not-allowed; }
+  .pill { display:inline-block; padding:2px 8px; background:#f1f5ff; border-radius:999px; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>🧰 保養/維修紀錄系統（純前端）</h1>
+
+<script>
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxkxVVhPh584pDELwmTik_KpN10mcfGNLLjqFLIDLYTw8n_A1Ua5QFqxtXKJhl04u5TuA/exec"; // 你的 Apps Script URL
+const $ = (q, r=document) => r.querySelector(q);
+const $$ = (q, r=document) => [...r.querySelectorAll(q)];
+const todayStr = () => new Date().toISOString().slice(0,10);
+function isDate(s){ return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
+function addServiceRow(){
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><input placeholder="服務項目"></td>
+                  <td style="width:1%"><button class="btn secondary" onclick="this.closest('tr').remove();recalc()">刪</button></td>`;
+  $('#services tbody').appendChild(tr);
+}
+function addPartRow(){
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><input placeholder="名稱"></td>
+                  <td><input type="number" value="0" oninput="recalc()"></td>
+                  <td><input type="number" value="1" oninput="recalc()"></td>
+                  <td class="sub">0</td>
+                  <td style="width:1%"><button class="btn secondary" onclick="this.closest('tr').remove();recalc()">刪</button></td>`;
+  $('#parts tbody').appendChild(tr);
+}
+
+function collectServices(){
+  return $$('#services tbody input').map(i=>i.value.trim()).filter(Boolean);
+}
+function collectParts(){
+  return $$('#parts tbody tr').map(tr=>{
+    const [name, price, qty] = $$('input', tr);
+    return {name:name.value.trim(), price:+(price.value||0), qty:+(qty.value||0)};
+  }).filter(p=>p.name);
+}
+
+function recalc(){
+  let sum = 0;
+  $$('#parts tbody tr').forEach(tr=>{
+    const [ , price, qty ] = $$('input', tr);
+    const sub = (+price.value||0)*(+qty.value||0);
+    $('.sub', tr).textContent = sub;
+    sum += sub;
+  });
+  $('#parts_total').textContent = sum;
+  if ($('#mode').value === 'auto') {
+    const labor = +($('#labor').value||0);
+    $('#total').value = sum + labor;
+  }
+}
+
+async function createRecord(){
+  const name = $('#name').value.trim();
+  const phone = $('#phone').value.trim();
+  const date = $('#date').value.trim();
+  const mileage = +($('#mileage').value||0);
+  const services = collectServices();
+  const parts = collectParts();
+  const labor = +($('#labor').value||0);
+  const total = +($('#total').value||0);
+  if (!name || !phone || !isDate(date)) { alert('姓名/電話/日期(YYYY-MM-DD) 必填'); return; }
+
+  const parts_cost = parts.reduce((a,b)=>a + (b.price*b.qty),0);
+  const payload = {
+    type: "maintenance_log",
+    timestamp: Math.floor(Date.now()/1000),
+    data: {
+      customer_name: name,
+      phone, datetime: date, mileage_km: mileage,
+      services: services.join(', '),
+      parts_used: parts.map(p=>`${p.name}x${p.qty}`).join(', '),
+      labor_cost: labor, parts_cost, total_cost: total, notes: $('#notes').value.trim()
+    }
+  };
+
+  $('#create_btn').disabled = true;
+  try{
+    const res = await fetch(GAS_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const txt = await res.text();
+    alert(res.ok ? '✅ 新增成功' : ('❌ 失敗：'+txt.slice(0,200)));
+    if (res.ok) document.forms[0].reset(), $('#date').value=todayStr(), $('#mode').value='auto', $('#total').value='';
+  }catch(e){ alert('❌ 連線失敗：'+e); }
+  $('#create_btn').disabled = false;
+}
+
+async function query(){
+  const phone = $('#q_phone').value.trim();
+  if(!phone){ alert('請輸入電話'); return; }
+  const p = new URLSearchParams({phone});
+  if($('#q_from').value) p.set('from',$('#q_from').value);
+  if($('#q_to').value)   p.set('to',$('#q_to').value);
+  $('#q_btn').disabled = true;
+  try{
+    const res = await fetch(`${GAS_URL}?${p.toString()}`);
+    const js = await res.json();
+    const rows = js.rows || [];
+    rows.sort((a,b)=> (new Date(b.datetime||b.created_at||0)) - (new Date(a.datetime||a.created_at||0)));
+    const tbody = $('#q_tbl tbody'); tbody.innerHTML='';
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${(r.datetime||'').toString().slice(0,19)}</td>
+                      <td>${r.customer_name||''}</td>
+                      <td>${r.phone||''}</td>
+                      <td>${r.mileage_km||''}</td>
+                      <td>${r.services||''}</td>
+                      <td>${r.parts_used||''}</td>
+                      <td>${r.total_cost||0}</td>`;
+      tbody.appendChild(tr);
+    });
+    $('#q_count').textContent = rows.length;
+    $('#dl_csv').onclick = ()=>{
+      const header = ["datetime","customer_name","phone","mileage_km","services","parts_used","total_cost"];
+      const csv = [header.join(',')].concat(
+        rows.map(r=> header.map(k=> `"${(r[k]??'').toString().replace(/"/g,'""')}"`).join(','))
+      ).join('\n');
+      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `records_${phone}.csv`;
+      a.click();
+    };
+  }catch(e){ alert('❌ 查詢失敗：'+e); }
+  $('#q_btn').disabled = false;
+}
+
+window.addEventListener('load', ()=>{
+  addServiceRow(); addPartRow();
+  $('#date').value = todayStr();
+  $('#mode').addEventListener('change', ()=>{
+    if($('#mode').value==='auto'){ recalc(); }
+  });
+});
+</script>
+
+<!-- 新增 -->
+<h2>➕ 新增紀錄</h2>
+<form onsubmit="return false">
+  <div class="row">
+    <label>姓名<input id="name" required></label>
+    <label>電話<input id="phone" required></label>
+  </div>
+  <div class="row">
+    <label>到店日期 (YYYY-MM-DD)<input id="date" placeholder="2025-10-07"></label>
+    <label>里程(公里)<input id="mileage" type="number" value="0"></label>
+  </div>
+
+  <fieldset>
+    <legend>服務項目 <span class="pill" onclick="addServiceRow()">＋新增</span></legend>
+    <table id="services"><thead><tr><th>服務項目</th><th style="width:1%">操作</th></tr></thead><tbody></tbody></table>
+  </fieldset>
+
+  <fieldset>
+    <legend>料件 <span class="pill" onclick="addPartRow()">＋新增</span></legend>
+    <table id="parts"><thead><tr><th>名稱</th><th>單價</th><th>數量</th><th>小計</th><th style="width:1%">操作</th></tr></thead><tbody></tbody></table>
+    <div style="text-align:right;margin-top:6px">料件總價：<b id="parts_total">0</b></div>
+  </fieldset>
+
+  <div class="row">
+    <label>金額模式
+      <select id="mode">
+        <option value="auto" selected>自動計算（料件總＋工資）</option>
+        <option value="manual">手動輸入</option>
+      </select>
+    </label>
+    <label>工資（空白=0）<input id="labor" type="number" value="0" oninput="recalc()"></label>
+    <label>總金額<input id="total" type="number" placeholder="自動或手動" oninput="document.getElementById('mode').value='manual'"></label>
+  </div>
+
+  <label>備註<textarea id="notes" rows="2"></textarea></label>
+  <button id="create_btn" class="btn" onclick="recalc();createRecord()">🚀 送出新增</button>
+</form>
+
+<!-- 查詢 -->
+<h2>🔍 查詢紀錄</h2>
+<div class="row">
+  <label>電話<input id="q_phone"></label>
+  <label>起始日期 (YYYY-MM-DD)<input id="q_from" placeholder=""></label>
+  <label>結束日期 (YYYY-MM-DD)<input id="q_to" placeholder=""></label>
+</div>
+<button id="q_btn" class="btn" onclick="query()">查詢</button>
+<button id="dl_csv" class="btn secondary">下載 CSV</button>
+<div style="margin-top:8px">共 <b id="q_count">0</b> 筆（依日期降冪）</div>
+<table id="q_tbl">
+  <thead><tr>
+    <th>日期時間</th><th>姓名</th><th>電話</th><th>里程</th><th>服務</th><th>料件</th><th>總額</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+</script>
+</body></html>
