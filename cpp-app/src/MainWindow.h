@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QStandardItemModel>
 #include <QTabWidget>
 #include <QTextEdit>
@@ -48,16 +49,19 @@ private:
     QLineEdit *warrantyEndInput = nullptr;
     QTextEdit *notesInput = nullptr;
     QLineEdit *submitResult = nullptr;
+    QPushButton *submitButton = nullptr;
 
     QLineEdit *queryPhoneInput = nullptr;
     QCheckBox *onlyWaterCheckbox = nullptr;
     QLineEdit *queryMessage = nullptr;
     QStandardItemModel *resultsModel = nullptr;
     QStandardItemModel *latestModel = nullptr;
+    QPushButton *queryButton = nullptr;
 
     QCheckBox *replacedConfirm = nullptr;
     QLineEdit *replaceDateInput = nullptr;
     QComboBox *replaceCycleCombo = nullptr;
     QLineEdit *replaceNoteInput = nullptr;
     QLineEdit *replaceResult = nullptr;
+    QPushButton *replaceButton = nullptr;
 };

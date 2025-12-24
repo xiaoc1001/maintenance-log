@@ -181,7 +181,7 @@ void MainWindow::buildUi() {
     notesInput->setPlaceholderText("備註");
     addLayout->addWidget(notesInput);
 
-    auto *submitButton = new QPushButton("🚀 送出新增", this);
+    submitButton = new QPushButton("🚀 送出新增", this);
     submitResult = new QLineEdit(this);
     submitResult->setReadOnly(true);
     addLayout->addWidget(submitButton);
@@ -203,7 +203,7 @@ void MainWindow::buildUi() {
     queryRow->addWidget(onlyWaterCheckbox);
     queryLayout->addLayout(queryRow);
 
-    auto *queryButton = new QPushButton("查詢", this);
+    queryButton = new QPushButton("查詢", this);
     queryMessage = new QLineEdit(this);
     queryMessage->setReadOnly(true);
     queryLayout->addWidget(queryButton);
@@ -247,7 +247,7 @@ void MainWindow::buildUi() {
     cycleRow->addWidget(replaceNoteInput);
     queryLayout->addLayout(cycleRow);
 
-    auto *replaceButton = new QPushButton("🧾 新增『淨水更換』紀錄並刷新", this);
+    replaceButton = new QPushButton("🧾 新增『淨水更換』紀錄並刷新", this);
     replaceResult = new QLineEdit(this);
     replaceResult->setReadOnly(true);
     queryLayout->addWidget(replaceButton);
@@ -376,8 +376,13 @@ void MainWindow::submitRecord() {
     data.insert("notes", notesInput->toPlainText().trimmed());
     data.insert("created_at", QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
 
-    ApiClient::Result result = apiClient.postRecord(data);
-    submitResult->setText(result.message);
+    submitButton->setEnabled(false);
+    submitResult->setText("⏳ 送出中...");
+
+    apiClient.postRecordAsync(data, [this](const ApiClient::Result &result) {
+        submitButton->setEnabled(true);
+        submitResult->setText(result.message);
+    });
 }
 
 void MainWindow::queryRecords() {
@@ -390,23 +395,28 @@ void MainWindow::queryRecords() {
     }
 
     bool onlyWater = onlyWaterCheckbox->isChecked();
-    ApiClient::Result result = apiClient.getRecords(phone, onlyWater);
-    if (!result.ok) {
-        queryMessage->setText(result.message);
-        resultsModel->clear();
-        latestModel->clear();
-        return;
-    }
+    queryButton->setEnabled(false);
+    queryMessage->setText("⏳ 查詢中...");
 
-    if (result.rows.isEmpty()) {
-        queryMessage->setText("查無資料");
-        resultsModel->clear();
-        latestModel->clear();
-        return;
-    }
+    apiClient.getRecordsAsync(phone, onlyWater, [this, onlyWater](const ApiClient::Result &result) {
+        queryButton->setEnabled(true);
+        if (!result.ok) {
+            queryMessage->setText(result.message);
+            resultsModel->clear();
+            latestModel->clear();
+            return;
+        }
 
-    fillResults(result.rows, onlyWater);
-    queryMessage->setText("✅ 已依民國日期降冪排序");
+        if (result.rows.isEmpty()) {
+            queryMessage->setText("查無資料");
+            resultsModel->clear();
+            latestModel->clear();
+            return;
+        }
+
+        fillResults(result.rows, onlyWater);
+        queryMessage->setText("✅ 已依民國日期降冪排序");
+    });
 }
 
 void MainWindow::updateTable(QStandardItemModel *model, const QList<QStringList> &rows, const QStringList &headers) {
@@ -560,66 +570,75 @@ void MainWindow::waterReplace() {
         return;
     }
 
-    ApiClient::Result rawResult = apiClient.fetchRaw(phone);
-    if (!rawResult.ok) {
-        replaceResult->setText(QString("❌ 讀取原始資料失敗：%1").arg(rawResult.message));
-        return;
-    }
+    replaceButton->setEnabled(false);
+    replaceResult->setText("⏳ 讀取資料中...");
 
-    if (rawResult.rows.isEmpty()) {
-        replaceResult->setText("❌ 查無此電話資料，無法建立更換紀錄");
-        return;
-    }
-
-    QJsonObject latestRecord;
-    QDateTime latestCreated;
-    for (const auto &value : rawResult.rows) {
-        if (!value.isObject()) {
-            continue;
+    apiClient.fetchRawAsync(phone, [this, phone, replaceDateText, cycleChoice, extraNote](const ApiClient::Result &rawResult) {
+        if (!rawResult.ok) {
+            replaceButton->setEnabled(true);
+            replaceResult->setText(QString("❌ 讀取原始資料失敗：%1").arg(rawResult.message));
+            return;
         }
-        QJsonObject obj = value.toObject();
-        QDateTime createdAt = QDateTime::fromString(obj.value("created_at").toString(), "yyyy-MM-dd HH:mm:ss");
-        if (!latestCreated.isValid() || createdAt > latestCreated) {
-            latestCreated = createdAt;
-            latestRecord = obj;
+
+        if (rawResult.rows.isEmpty()) {
+            replaceButton->setEnabled(true);
+            replaceResult->setText("❌ 查無此電話資料，無法建立更換紀錄");
+            return;
         }
-    }
 
-    QDate replaceDate = DateUtils::parseYmd(replaceDateText);
-    QString nextReplace = DateUtils::dateToRoc(DateUtils::addMonths(replaceDate, cycleToMonths(cycleChoice)));
+        QJsonObject latestRecord;
+        QDateTime latestCreated;
+        for (const auto &value : rawResult.rows) {
+            if (!value.isObject()) {
+                continue;
+            }
+            QJsonObject obj = value.toObject();
+            QDateTime createdAt = QDateTime::fromString(obj.value("created_at").toString(), "yyyy-MM-dd HH:mm:ss");
+            if (!latestCreated.isValid() || createdAt > latestCreated) {
+                latestCreated = createdAt;
+                latestRecord = obj;
+            }
+        }
 
-    QString note = "淨水設備更換";
-    if (!extraNote.isEmpty()) {
-        note = QString("%1｜%2").arg(note, extraNote);
-    }
+        QDate replaceDate = DateUtils::parseYmd(replaceDateText);
+        QString nextReplace = DateUtils::dateToRoc(DateUtils::addMonths(replaceDate, cycleToMonths(cycleChoice)));
 
-    QJsonObject data;
-    data.insert("service_date_ad", DateUtils::dateToIso(replaceDate));
-    data.insert("service_date_roc", DateUtils::dateToRoc(replaceDate));
-    data.insert("customer_name", latestRecord.value("customer_name").toString());
-    data.insert("phone", phone);
-    data.insert("address", latestRecord.value("address").toString());
+        QString note = "淨水設備更換";
+        if (!extraNote.isEmpty()) {
+            note = QString("%1｜%2").arg(note, extraNote);
+        }
 
-    QJsonArray purposeArray;
-    purposeArray.append("安裝");
-    data.insert("purposes", purposeArray);
+        QJsonObject data;
+        data.insert("service_date_ad", DateUtils::dateToIso(replaceDate));
+        data.insert("service_date_roc", DateUtils::dateToRoc(replaceDate));
+        data.insert("customer_name", latestRecord.value("customer_name").toString());
+        data.insert("phone", phone);
+        data.insert("address", latestRecord.value("address").toString());
 
-    QJsonArray itemArray;
-    itemArray.append(kWaterItem);
-    data.insert("items", itemArray);
-    data.insert("other_item_text", "");
-    data.insert("water_replace_cycle", cycleChoice);
-    data.insert("next_replace_date_roc", nextReplace);
-    data.insert("warranty_end_date_roc", "");
-    data.insert("notes", note);
-    data.insert("created_at", QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
+        QJsonArray purposeArray;
+        purposeArray.append("安裝");
+        data.insert("purposes", purposeArray);
 
-    ApiClient::Result postResult = apiClient.postRecord(data);
-    if (!postResult.ok) {
-        replaceResult->setText(QString("❌ 新增更換紀錄失敗：%1").arg(postResult.message));
-        return;
-    }
+        QJsonArray itemArray;
+        itemArray.append(kWaterItem);
+        data.insert("items", itemArray);
+        data.insert("other_item_text", "");
+        data.insert("water_replace_cycle", cycleChoice);
+        data.insert("next_replace_date_roc", nextReplace);
+        data.insert("warranty_end_date_roc", "");
+        data.insert("notes", note);
+        data.insert("created_at", QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
 
-    replaceResult->setText(QString("✅ 已新增一筆『淨水設備更換』紀錄（下次更換：%1）").arg(nextReplace));
-    queryRecords();
+        replaceResult->setText("⏳ 新增更換紀錄中...");
+        apiClient.postRecordAsync(data, [this, nextReplace](const ApiClient::Result &postResult) {
+            replaceButton->setEnabled(true);
+            if (!postResult.ok) {
+                replaceResult->setText(QString("❌ 新增更換紀錄失敗：%1").arg(postResult.message));
+                return;
+            }
+
+            replaceResult->setText(QString("✅ 已新增一筆『淨水設備更換』紀錄（下次更換：%1）").arg(nextReplace));
+            queryRecords();
+        });
+    });
 }

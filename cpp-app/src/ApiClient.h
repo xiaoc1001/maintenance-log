@@ -2,8 +2,11 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
+
+#include <functional>
 
 class ApiClient : public QObject {
     Q_OBJECT
@@ -17,12 +20,18 @@ public:
         QJsonArray rows;
     };
 
-    Result postRecord(const QJsonObject &data);
-    Result getRecords(const QString &phone, bool onlyWater);
-    Result fetchRaw(const QString &phone);
+    using ResultHandler = std::function<void(const Result &)>;
+
+    void postRecordAsync(const QJsonObject &data, ResultHandler handler);
+    void getRecordsAsync(const QString &phone, bool onlyWater, ResultHandler handler);
+    void fetchRawAsync(const QString &phone, ResultHandler handler);
 
 private:
     QString endpointUrl();
-    Result sendPost(const QJsonObject &payload);
-    Result sendGet(const QUrl &url);
+    void sendPostAsync(const QJsonObject &payload, ResultHandler handler);
+    void sendGetAsync(const QUrl &url, ResultHandler handler);
+    Result buildErrorResult(const QString &message) const;
+    Result parseJsonResult(const QByteArray &body, bool expectRows, const QString &errorPrefix) const;
+
+    QNetworkAccessManager manager;
 };

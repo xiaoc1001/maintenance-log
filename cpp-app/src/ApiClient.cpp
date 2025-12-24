@@ -1,7 +1,6 @@
 #include "ApiClient.h"
 
 #include <QDateTime>
-#include <QEventLoop>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -11,29 +10,6 @@
 namespace {
 const char *kEndpointUrl =
     "https://script.google.com/macros/s/AKfycbyyHjCS0qBVtI4jDD9HiqT2kRnMV6U0pOQLUT68kRMlp2i7A1KAqtu1CwFT1DGiq58W/exec";
-
-struct ReplyPayload {
-    int statusCode = 0;
-    QString contentType;
-    QByteArray body;
-    QString error;
-};
-
-ReplyPayload waitForReply(QNetworkReply *reply) {
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    ReplyPayload payload;
-    payload.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    payload.contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
-    payload.body = reply->readAll();
-    if (reply->error() != QNetworkReply::NoError) {
-        payload.error = reply->errorString();
-    }
-    reply->deleteLater();
-    return payload;
-}
 } // namespace
 
 ApiClient::ApiClient(QObject *parent) : QObject(parent) {}
@@ -42,111 +18,85 @@ QString ApiClient::endpointUrl() {
     return QString::fromUtf8(kEndpointUrl);
 }
 
-ApiClient::Result ApiClient::sendPost(const QJsonObject &payload) {
-    QNetworkAccessManager manager;
+void ApiClient::sendPostAsync(const QJsonObject &payload, ResultHandler handler) {
     QNetworkRequest request(QUrl(endpointUrl()));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QNetworkReply *reply = manager.post(request, QJsonDocument(payload).toJson());
-    ReplyPayload payloadData = waitForReply(reply);
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, handler]() {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+        const QByteArray body = reply->readAll();
+        const QString error = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
+        reply->deleteLater();
 
-    Result result;
-    if (!payloadData.error.isEmpty()) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 連線失敗：%1").arg(payloadData.error);
-        return result;
-    }
+        if (!error.isEmpty()) {
+            handler(buildErrorResult(QString::fromUtf8("❌ 連線失敗：%1").arg(error)));
+            return;
+        }
 
-    if (payloadData.statusCode != 200) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ HTTP %1\n%2")
-                             .arg(payloadData.statusCode)
-                             .arg(QString::fromUtf8(payloadData.body.left(200)));
-        return result;
-    }
+        if (statusCode != 200) {
+            handler(buildErrorResult(QString::fromUtf8("❌ HTTP %1\n%2")
+                                         .arg(statusCode)
+                                         .arg(QString::fromUtf8(body.left(200)))));
+            return;
+        }
 
-    if (!payloadData.contentType.contains("application/json")) {
-        result.ok = true;
-        result.message = QString::fromUtf8("✅ 新增成功（回應非JSON）");
-        return result;
-    }
+        if (!contentType.contains("application/json")) {
+            Result result;
+            result.ok = true;
+            result.message = QString::fromUtf8("✅ 新增成功（回應非JSON）");
+            handler(result);
+            return;
+        }
 
-    QJsonDocument doc = QJsonDocument::fromJson(payloadData.body);
-    if (!doc.isObject()) {
-        result.ok = true;
-        result.message = QString::fromUtf8("✅ 新增成功（回應非JSON）");
-        return result;
-    }
-
-    QJsonObject obj = doc.object();
-    if (obj.value("ok").isBool() && !obj.value("ok").toBool()) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 新增失敗：%1").arg(obj.value("error").toString("未知錯誤"));
-        return result;
-    }
-
-    result.ok = true;
-    result.message = QString::fromUtf8("✅ 新增成功");
-    return result;
+        Result result = parseJsonResult(body, false, QString::fromUtf8("新增"));
+        handler(result);
+    });
 }
 
-ApiClient::Result ApiClient::sendGet(const QUrl &url) {
-    QNetworkAccessManager manager;
+void ApiClient::sendGetAsync(const QUrl &url, ResultHandler handler) {
     QNetworkRequest request(url);
 
     QNetworkReply *reply = manager.get(request);
-    ReplyPayload payloadData = waitForReply(reply);
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, handler]() {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+        const QByteArray body = reply->readAll();
+        const QString error = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
+        reply->deleteLater();
 
-    Result result;
-    if (!payloadData.error.isEmpty()) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 連線失敗：%1").arg(payloadData.error);
-        return result;
-    }
+        if (!error.isEmpty()) {
+            handler(buildErrorResult(QString::fromUtf8("❌ 連線失敗：%1").arg(error)));
+            return;
+        }
 
-    if (payloadData.statusCode != 200) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ HTTP %1\n%2")
-                             .arg(payloadData.statusCode)
-                             .arg(QString::fromUtf8(payloadData.body.left(200)));
-        return result;
-    }
+        if (statusCode != 200) {
+            handler(buildErrorResult(QString::fromUtf8("❌ HTTP %1\n%2")
+                                         .arg(statusCode)
+                                         .arg(QString::fromUtf8(body.left(200)))));
+            return;
+        }
 
-    if (!payloadData.contentType.contains("application/json")) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 回應非JSON（可能權限/網址錯）\n%1")
-                             .arg(QString::fromUtf8(payloadData.body.left(200)));
-        return result;
-    }
+        if (!contentType.contains("application/json")) {
+            handler(buildErrorResult(QString::fromUtf8("❌ 回應非JSON（可能權限/網址錯）\n%1")
+                                         .arg(QString::fromUtf8(body.left(200)))));
+            return;
+        }
 
-    QJsonDocument doc = QJsonDocument::fromJson(payloadData.body);
-    if (!doc.isObject()) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 回應格式錯誤");
-        return result;
-    }
-
-    QJsonObject obj = doc.object();
-    if (obj.value("ok").isBool() && !obj.value("ok").toBool()) {
-        result.ok = false;
-        result.message = QString::fromUtf8("❌ 查詢失敗：%1").arg(obj.value("error").toString("未知錯誤"));
-        return result;
-    }
-
-    result.ok = true;
-    result.rows = obj.value("rows").toArray();
-    return result;
+        handler(parseJsonResult(body, true, QString::fromUtf8("查詢")));
+    });
 }
 
-ApiClient::Result ApiClient::postRecord(const QJsonObject &data) {
+void ApiClient::postRecordAsync(const QJsonObject &data, ResultHandler handler) {
     QJsonObject payload;
     payload.insert("type", "customer_service");
     payload.insert("timestamp", static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
     payload.insert("data", data);
-    return sendPost(payload);
+    sendPostAsync(payload, handler);
 }
 
-ApiClient::Result ApiClient::getRecords(const QString &phone, bool onlyWater) {
+void ApiClient::getRecordsAsync(const QString &phone, bool onlyWater, ResultHandler handler) {
     QUrl url(endpointUrl());
     QUrlQuery query;
     query.addQueryItem("phone", phone);
@@ -154,13 +104,41 @@ ApiClient::Result ApiClient::getRecords(const QString &phone, bool onlyWater) {
         query.addQueryItem("only_water", "1");
     }
     url.setQuery(query);
-    return sendGet(url);
+    sendGetAsync(url, handler);
 }
 
-ApiClient::Result ApiClient::fetchRaw(const QString &phone) {
+void ApiClient::fetchRawAsync(const QString &phone, ResultHandler handler) {
     QUrl url(endpointUrl());
     QUrlQuery query;
     query.addQueryItem("phone", phone);
     url.setQuery(query);
-    return sendGet(url);
+    sendGetAsync(url, handler);
+}
+
+ApiClient::Result ApiClient::buildErrorResult(const QString &message) const {
+    Result result;
+    result.ok = false;
+    result.message = message;
+    return result;
+}
+
+ApiClient::Result ApiClient::parseJsonResult(const QByteArray &body, bool expectRows, const QString &errorPrefix) const {
+    QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject()) {
+        return buildErrorResult(QString::fromUtf8("❌ 回應格式錯誤"));
+    }
+
+    QJsonObject obj = doc.object();
+    if (obj.value("ok").isBool() && !obj.value("ok").toBool()) {
+        return buildErrorResult(QString::fromUtf8("❌ %1失敗：%2").arg(errorPrefix, obj.value("error").toString("未知錯誤")));
+    }
+
+    Result result;
+    result.ok = true;
+    if (expectRows) {
+        result.rows = obj.value("rows").toArray();
+    } else {
+        result.message = QString::fromUtf8("✅ 新增成功");
+    }
+    return result;
 }
